@@ -334,7 +334,7 @@ void ErrorState::updateLCD()
   // Do nothing. LCD was written to during state transition.
 }
 
-//********************SwampCooler Methods********************
+//********************SwampCooler steps********************
 
 SwampCooler::SwampCooler() : disabled{this}, idle{this}, running{this}, error{this}
 {
@@ -376,7 +376,7 @@ void SwampCooler::update()
   }
 }
 
-/// Transition to the disabled state
+// the disabled state
 void SwampCooler::setDisabled()
 {
   setDisabledOutputs();
@@ -385,7 +385,7 @@ void SwampCooler::setDisabled()
   currentstate->updateLCD();
 }
 
-/// Transition to the idle state
+// the idle state
 void SwampCooler::setIdle()
 {
   state = State::Idle;
@@ -401,7 +401,7 @@ void SwampCooler::setRunning()
   currentstate = &running;
 }
 
-/// Transition to the error state
+// the error state
 void SwampCooler::setError()
 {
   setErrorOutputs();
@@ -519,7 +519,7 @@ void printRTCTime()
   Serial.println();
 }
 
-/// Init ADC
+// Init ADC
 void adcInit()
 {
   // 7: enable adc, 2-0: 128 prescaler
@@ -529,7 +529,7 @@ void adcInit()
   *myADMUX = 0b01000000;
 }
 
-/// Read ADC value from channel
+// Read ADC value from channel
 unsigned int adcRead(unsigned char adc_channel)
 {
   // Set Channel
@@ -555,15 +555,15 @@ unsigned int adcRead(unsigned char adc_channel)
 
 SwampCooler swampcooler;
 
-/// The time in millis since arduino startup of the last button press. Used for debouncing.
+// The time in millis since arduino startup of the last button press. Used for debouncing.
 volatile unsigned long lastButtonPressTime = 0;
-/// The time between button presses.
+// The time between button presses.
 volatile unsigned long buttonPressDebounceThreshold = 200;
 
-/// Whether the last button event was high
+// Whether the last button event was high
 volatile bool lastButtonWasHigh = false;
 
-/// ISR handler for button presses
+// ISR handler for button presses
 void processButtonPressISR()
 {
   unsigned long currentButtonPressTime = millis();
