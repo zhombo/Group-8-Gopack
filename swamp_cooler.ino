@@ -28,19 +28,19 @@ void printRTCTime();
 void adcInit();
 unsigned int adcRead(unsigned char adc_channel_num);
 
-///PORTA Registers
+//PORTA Registers
 volatile unsigned char *porta = (unsigned char *)0x22;
 volatile unsigned char *pina = (unsigned char *)0x20;
 volatile unsigned char *ddra = (unsigned char *)0x21;
 
-///Position of LEDs and motor on PORTA
+//Position of LEDs and motor on PORTA
 const unsigned char PORTA_YELLOW = 1;
 const unsigned char PORTA_GREEN = 3;
 const unsigned char PORTA_BLUE = 5;
 const unsigned char PORTA_MOTOR = 6;
 const unsigned char PORTA_RED = 7;
 
-///Analog read registers
+//Analog read registers
 DECL_REG_U8(myADCSRA, 0x7A);
 DECL_REG_U8(myADCSRB, 0x7B);
 DECL_REG_U8(myADMUX, 0x7C);
@@ -56,82 +56,82 @@ DECL_REG_U8(myEICRA, 0x69);
 DECL_REG_U8(myDDRD, 0x2A);
 DECL_REG_U8(myPORTD, 0x2B);
 
-/// The pin for the water sensor
+// The pin for the water sensor
 const unsigned char WATER_SENSOR_PIN = 0;
 
-/// The pin for the disable button
+// The pin for the disable button
 const unsigned char BUTTON_PIN = 18;
 
-/// The pin for the dht sensor
+// The pin for the dht sensor
 const unsigned char DHT_PIN = 19;
 
-/// The pin for the servo
+// The pin for the servo
 const unsigned char SERVO_PIN = 7;
 
-/// The yellow led pin
+// The yellow led pin
 const unsigned char YELLOW_LED_PIN = 23;
-/// The green led pin
+// The green led pin
 const unsigned char GREEN_LED_PIN = 25;
-/// The blue led pin
+// The blue led pin
 const unsigned char BLUE_LED_PIN = 27;
-/// The red led pin
+// The red led pin
 const unsigned char RED_LED_PIN = 29;
 
-/// The motor pin
+// The motor pin
 const unsigned char MOTOR_PIN = 28;
 
-/// The time between lcd updates in ms. The DHT sensor only updates around 1Hz. The LCD also cannot display constantly.
+// The time between lcd updates in ms. The DHT sensor only updates around 1Hz. The LCD also cannot display constantly.
 const unsigned long LCD_UPDATE_INTERVAL = 1000;
 
-/// The time between servo updates in ms.
+// The time between servo updates in ms.
 const unsigned long SERVO_UPDATE_INTERVAL = 50;
 
-/// The low water analog reading limit
+// The low water analog reading limit
 int lowWaterThreshold = 150;
 
-/// The upper limit on the temperature, in degrees Celcius
+// The upper limit on the temperature, in degrees Celcius
 float tempHighThreshold = 23.0;
 
-/// The lower limit on the temperature, in degrees Celcius
+// The lower limit on the temperature, in degrees Celcius
 float tempLowThreshold = 19.0;
 
-/// The lcd display for DHT sensor readings
+// The lcd display for DHT sensor readings
 LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
 
-/// The DHT Temperature and Humidity sensor
+// The DHT Temperature and Humidity sensor
 DHT dht(DHT_PIN, DHT11);
 
-/// Real time clock module
+// Real time clock module
 RTC_DS1307 rtc;
 
-/// The current Date and Time
+// The current Date and Time
 DateTime now;
 
-/// The servo for vent control
+// The servo for vent control
 Servo servo;
 
-/// Holds latest water level
+// Holds latest water level
 unsigned int waterLevel = 0;
 
-/// The current servo angle.
+// The current servo angle.
 unsigned int servoAngle = 90;
 
-/// Holds latest temperature reading. Is Nan before readings are taken.
+// Holds latest temperature reading. Is Nan before readings are taken.
 float temperature = NAN;
 
-/// Holds latest humidity reading. Is Nan before readings are taken.
+// Holds latest humidity reading. Is Nan before readings are taken.
 float humidity = NAN;
 
-/// Is true when the button has been pressed. Must be manually reset with `buttonPressed = false`.
+// Is true when the button has been pressed. Must be manually reset with `buttonPressed = false`.
 volatile bool buttonPressed = false;
 
-/// The time of the last lcd update
+// The time of the last lcd update
 unsigned long lastLCDUpdate = 0;
 
-/// The time of the last servo update
+// The time of the last servo update
 unsigned long lastServoUpdate = 0;
 
-/// An enum of every possible state of a `SwampCooler`
+// An enum of every possible state of a `SwampCooler`
 enum State
 {
   Disabled = 0,
@@ -230,7 +230,7 @@ void DisabledState::checkTemp()
 {
 }
 
-/// Updates the LCD for the disabled state
+// Updates the LCD for the disabled state
 void DisabledState::updateLCD()
 {
   // Do nothing. LCD was populated during state transition.
@@ -262,7 +262,7 @@ void IdleState::checkTemp()
     sc->setRunning();
 }
 
-/// Update LCD for the idle state
+// Update LCD for the idle state
 void IdleState::updateLCD()
 {
   updateLCDStats();
@@ -299,7 +299,7 @@ void RunningState::checkTemp()
   }
 }
 
-/// Update LCD for the Running state
+// Update LCD for the Running state
 void RunningState::updateLCD()
 {
   // Update humidity stat
@@ -328,7 +328,7 @@ void ErrorState::checkTemp()
 {
 }
 
-/// Update the lcd for the Error state
+// Update the lcd for the Error state
 void ErrorState::updateLCD()
 {
   // Do nothing. LCD was written to during state transition.
@@ -393,7 +393,7 @@ void SwampCooler::setIdle()
   currentstate = &idle;
 }
 
-/// Transition to the running state
+// the running state
 void SwampCooler::setRunning()
 {
   setRunningOutputs();
@@ -412,7 +412,7 @@ void SwampCooler::setError()
 //***************OUTPUT FUNCTIONS****************
 void disableAll()
 {
-  /// Disable all LEDs and motor
+  // Disable all LEDs and motor
   *porta &= 0b00010101;
 }
 
@@ -420,7 +420,7 @@ void setDisabledOutputs()
 {
   disableAll();
 
-  /// Set Yellow LED to high
+  // Set Yellow LED to high
   *porta |= (1 << PORTA_YELLOW);
 
   lcd.clear();
@@ -432,7 +432,7 @@ void setIdleOutputs()
 {
   disableAll();
 
-  /// Enable Green LED
+  // Enable Green LED
   *porta |= (1 << PORTA_GREEN);
 }
 
@@ -442,7 +442,7 @@ void setRunningOutputs()
   Serial.print("Motor on, Changed state to running on: ");
   printRTCTime();
 
-  /// Enable blue LED
+  // Enable blue LED
   *porta |= (1 << PORTA_BLUE);
   *porta |= (1 << PORTA_MOTOR);
 }
@@ -451,7 +451,7 @@ void setErrorOutputs()
 {
   disableAll();
 
-  /// Enable Red LED
+  // Enable Red LED
   *porta |= (1 << PORTA_RED);
 
   lcd.clear();
@@ -459,7 +459,7 @@ void setErrorOutputs()
   lcd.print("Water Low");
 }
 
-/// Get the water level and cache it the result in `waterlevel`
+// Get the water level and cache it the result in `waterlevel`
 int getWaterLevel()
 {
   unsigned int reading = adcRead(0);
@@ -470,21 +470,21 @@ int getWaterLevel()
   return waterLevel;
 }
 
-/// Get the temperature and cache the result in `temperature`
+// Get the temperature and cache the result in `temperature`
 int getTemperature()
 {
   temperature = dht.readTemperature();
   return temperature;
 }
 
-/// Get the temperature and cache the result in `humidity`
+// Get the temperature and cache the result in `humidity`
 int getHumidity()
 {
   humidity = dht.readHumidity();
   return humidity;
 }
 
-/// Update the lcd with humidity and temperature stats
+// Update the lcd with humidity and temperature stats
 void updateLCDStats()
 {
   lcd.clear();
@@ -502,7 +502,7 @@ void updateLCDStats()
   lcd.print("%");
 }
 
-/// Print time using RTC
+// Print time using RTC
 void printRTCTime()
 {
   Serial.print(now.year(), DEC);
