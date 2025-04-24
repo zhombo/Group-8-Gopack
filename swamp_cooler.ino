@@ -1,625 +1,312 @@
-#include <Wire.h>
-#include "RTClib.h"
-#include <LiquidCrystal.h>
+#include <Stepper.h>
 #include <DHT.h>
-#include <Servo.h>
+#include <RTClib.h>
 
-#define DECL_REG_U8(name, addr) volatile unsigned char *name = (volatile unsigned char *)addr;
-#define DECL_REG_U16(name, addr) volatile unsigned int *name = (volatile unsigned int *)addr;
+// Pin Definitions
 
-class SwampCooler;
-class StateInterface;
-class DisabledState;
-class IdleState;
-class RunningState;
-class ErrorState;
+#define START_BUTTON_PIN 2
+#define STOP_BUTTON_PIN 19
+#define RESET_BUTTON_PIN 18
+#define VENT_CONTROL_PIN 3
+#define LED_YELLOW 32
+#define LED_GREEN 30
+#define LED_RED 34
+#define LED_BLUE 36
 
-int getWaterLevel();
-int getTemperature();
-int getHumidity();
+#define DHT_PIN 7
+#define FAN_MOTOR_PIN1 4
+#define FAN_MOTOR_PIN2 7
+#define POWER_PIN 6
+#define WATER_LEVEL_PIN A0
 
-void disableAll();
-void setDisabledOutputs();
-void setIdleOutputs();
-void setRunningOutputs();
-void setErrorOutputs();
-void updateLCDStats();
-void printRTCTime();
-void adcInit();
-unsigned int adcRead(unsigned char adc_channel_num);
+// Stepper Motor Pins
+#define speedPin 5
+#define STEPPER_PIN3 24
+#define STEPPER_PIN4 22
+#define STEPPER_PIN1 28
+#define STEPPER_PIN2 26
 
-//PORTA Registers
-volatile unsigned char *porta = (unsigned char *)0x22;
-volatile unsigned char *pina = (unsigned char *)0x20;
-volatile unsigned char *ddra = (unsigned char *)0x21;
 
-//Position of LEDs and motor on PORTA
-const unsigned char PORTA_YELLOW = 1;
-const unsigned char PORTA_GREEN = 3;
-const unsigned char PORTA_BLUE = 5;
-const unsigned char PORTA_MOTOR = 6;
-const unsigned char PORTA_RED = 7;
+// Configuration Constants
+#define VENT_POSITION_TOLERANCE 5
+#define DHTTYPE DHT11
+#define WATER_THRESHOLD 15
+#define TEMP_LOW_THRESHOLD 10
+#define TEMP_HIGH_THRESHOLD 20
+#define STEPS_PER_REVOLUTION 2038
 
-//Analog read registers
-DECL_REG_U8(myADCSRA, 0x7A);
-DECL_REG_U8(myADCSRB, 0x7B);
-DECL_REG_U8(myADMUX, 0x7C);
-DECL_REG_U8(myDIDR0, 0x7E);
-DECL_REG_U8(myADCL, 0x78);
-DECL_REG_U8(myADCH, 0x79);
-
-// interrupt registers
-DECL_REG_U8(myEIMSK, 0x3D);
-DECL_REG_U8(myEICRA, 0x69);
-
-// Button registers
-DECL_REG_U8(myDDRD, 0x2A);
-DECL_REG_U8(myPORTD, 0x2B);
-
-// The pin for the water sensor
-const unsigned char WATER_SENSOR_PIN = 0;
-
-// The pin for the disable button
-const unsigned char BUTTON_PIN = 18;
-
-// The pin for the dht sensor
-const unsigned char DHT_PIN = 19;
-
-// The pin for the servo
-const unsigned char SERVO_PIN = 7;
-
-// The yellow led pin
-const unsigned char YELLOW_LED_PIN = 23;
-// The green led pin
-const unsigned char GREEN_LED_PIN = 25;
-// The blue led pin
-const unsigned char BLUE_LED_PIN = 27;
-// The red led pin
-const unsigned char RED_LED_PIN = 29;
-
-// The motor pin
-const unsigned char MOTOR_PIN = 28;
-
-// The time between lcd updates in ms. The DHT sensor only updates around 1Hz. The LCD also cannot display constantly.
-const unsigned long LCD_UPDATE_INTERVAL = 1000;
-
-// The time between servo updates in ms.
-const unsigned long SERVO_UPDATE_INTERVAL = 50;
-
-// The low water analog reading limit
-int lowWaterThreshold = 150;
-
-// The upper limit on the temperature, in degrees Celcius
-float tempHighThreshold = 23.0;
-
-// The lower limit on the temperature, in degrees Celcius
-float tempLowThreshold = 19.0;
-
-// The lcd display for DHT sensor readings
-LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
-
-// The DHT Temperature and Humidity sensor
-DHT dht(DHT_PIN, DHT11);
-
-// Real time clock module
-RTC_DS1307 rtc;
-
-// The current Date and Time
-DateTime now;
-
-// The servo for vent control
-Servo servo;
-
-// Holds latest water level
-unsigned int waterLevel = 0;
-
-// The current servo angle.
-unsigned int servoAngle = 90;
-
-// Holds latest temperature reading. Is Nan before readings are taken.
-float temperature = NAN;
-
-// Holds latest humidity reading. Is Nan before readings are taken.
-float humidity = NAN;
-
-// Is true when the button has been pressed. Must be manually reset with `buttonPressed = false`.
-volatile bool buttonPressed = false;
-
-// The time of the last lcd update
-unsigned long lastLCDUpdate = 0;
-
-// The time of the last servo update
-unsigned long lastServoUpdate = 0;
-
-// An enum of every possible state of a `SwampCooler`
-enum State
-{
-  Disabled = 0,
-  Idle = 1,
-  Running = 2,
-  Error = 3,
+// Definition status
+enum CoolerState {
+  DISABLED,
+  IDLE,
+  RUNNING,
+  ERROR
 };
 
-class StateInterface
-{
-protected:
-  SwampCooler *sc;
+volatile bool ventControlRequested = false;
 
-public:
-  virtual void disable_enable() = 0;
-  virtual void checkWater() = 0;
-  virtual void checkTemp() = 0;
-  virtual void updateLCD() = 0;
-};
+// Global Variables
+CoolerState currentState = DISABLED;
+DHT dht(DHT_PIN, DHTTYPE);
+RTC_DS3231 rtc;
+Stepper stepper(STEPS_PER_REVOLUTION, STEPPER_PIN1, STEPPER_PIN3, STEPPER_PIN2, STEPPER_PIN4);
+int currentVentAngle = 0;
 
-class DisabledState : public StateInterface
-{
-public:
-  DisabledState(SwampCooler *s);
-  void disable_enable();
-  void checkWater();
-  void checkTemp();
-  void updateLCD();
-};
-
-class IdleState : public StateInterface
-{
-public:
-  IdleState(SwampCooler *s);
-  void disable_enable();
-  void checkWater();
-  void checkTemp();
-  void updateLCD();
-};
-
-class RunningState : public StateInterface
-{
-public:
-  RunningState(SwampCooler *s);
-  void disable_enable();
-  void checkWater();
-  void checkTemp();
-  void updateLCD();
-};
-
-class ErrorState : public StateInterface
-{
-public:
-  ErrorState(SwampCooler *s);
-  void disable_enable();
-  void checkWater();
-  void checkTemp();
-  void updateLCD();
-};
-
-class SwampCooler
-{
-  StateInterface *currentstate;
-  DisabledState disabled;
-  IdleState idle;
-  RunningState running;
-  ErrorState error;
-
-public:
-  State state;
-
-  SwampCooler();
-  void update();
-  void setDisabled();
-  void setIdle();
-  void setRunning();
-  void setError();
-};
-
-//********************DisabledState Methods********************
-DisabledState::DisabledState(SwampCooler *s)
-{
-  sc = s;
+//  Start Button Interrupt Routine 
+void startButtonISR() {
+    Serial.println("Start Button Interrupt Triggered!"); 
+    if (currentState == DISABLED) {
+    currentState = IDLE;
+    updateLEDs();
+   }
 }
 
-void DisabledState::disable_enable()
-{
-  sc->setIdle();
-}
-
-void DisabledState::checkWater()
-{
-}
-
-void DisabledState::checkTemp()
-{
-}
-
-// Updates the LCD for the disabled state
-void DisabledState::updateLCD()
-{
-  // Do nothing. LCD was populated during state transition.
-}
-
-//********************IdleState Methods********************
-IdleState::IdleState(SwampCooler *s)
-{
-  sc = s;
-}
-
-void IdleState::disable_enable()
-{
-  sc->setDisabled();
-}
-
-void IdleState::checkWater()
-{
-  if (getWaterLevel() < lowWaterThreshold)
-    sc->setError();
-}
-
-void IdleState::checkTemp()
-{
-  // Update humidity stat
-  getHumidity();
-
-  if (getTemperature() > tempHighThreshold)
-    sc->setRunning();
-}
-
-// Update LCD for the idle state
-void IdleState::updateLCD()
-{
-  updateLCDStats();
-}
-
-//********************RunningState Methods********************
-RunningState::RunningState(SwampCooler *s)
-{
-  sc = s;
-}
-
-void RunningState::disable_enable()
-{
-  sc->setDisabled();
-}
-
-void RunningState::checkWater()
-{
-  if (getWaterLevel() < lowWaterThreshold)
-  {
-    Serial.print("Motor off, Changed state to error on: ");
-    printRTCTime();
-    sc->setError();
+// Stop Button Interrupt Service Routine
+void stopButtonISR() {
+  if (currentState == RUNNING) {
+    // Turn off fan motor
+    controlFanMotor(false);
+    Serial.print("State Transition to DISABLED at: ");
+    DateTime now = rtc.now();
+    Serial.println(now.timestamp());
+    currentState = DISABLED;
+    updateLEDs();
   }
 }
 
-void RunningState::checkTemp()
-{
-  if (getTemperature() < tempLowThreshold)
-  {
-    Serial.print("Motor off, Changed state to idle on: ");
-    printRTCTime();
-    sc->setIdle();
+//  Reset Button Interrupt Service Routine 
+void resetButtonISR() {
+  if (currentState == ERROR || currentState == RUNNING) {
+      currentState = IDLE;
+      updateLEDs();
   }
 }
 
-// Update LCD for the Running state
-void RunningState::updateLCD()
-{
-  // Update humidity stat
-  getHumidity();
-  updateLCDStats();
+void ventControlISR() {
+  ventControlRequested = true;
 }
 
-//********************ErrorState Methods********************
-ErrorState::ErrorState(SwampCooler *s)
-{
-  sc = s;
-}
-
-void ErrorState::disable_enable()
-{
-  sc->setDisabled();
-}
-
-void ErrorState::checkWater()
-{
-  if (getWaterLevel() > lowWaterThreshold)
-    sc->setIdle();
-}
-
-void ErrorState::checkTemp()
-{
-}
-
-// Update the lcd for the Error state
-void ErrorState::updateLCD()
-{
-  // Do nothing. LCD was written to during state transition.
-}
-
-//********************SwampCooler steps********************
-
-SwampCooler::SwampCooler() : disabled{this}, idle{this}, running{this}, error{this}
-{
-  setIdle();
-}
-
-void SwampCooler::update()
-{
-  if (buttonPressed)
-  {
-    currentstate->disable_enable();
-    buttonPressed = false;
-  }
-
-  currentstate->checkWater();
-  currentstate->checkTemp();
-
-  unsigned long time = millis();
-  if (time - lastLCDUpdate > LCD_UPDATE_INTERVAL)
-  {
-    currentstate->updateLCD();
-    lastLCDUpdate = time;
-  }
-
-  if (time - lastServoUpdate > SERVO_UPDATE_INTERVAL)
-  {
-    unsigned int reading = adcRead(1);
-
-    reading /= 6; // 1024 / 180 = 5.688, close enough. Avoid floats for speed.
-
-    unsigned int diff = reading > servoAngle ? reading - servoAngle : servoAngle - reading;
-    if (diff > 10)
-    {
-      servo.write(reading);
-      servoAngle = reading;
-    }
-
-    lastServoUpdate = time;
-  }
-}
-
-// the disabled state
-void SwampCooler::setDisabled()
-{
-  setDisabledOutputs();
-  state = State::Disabled;
-  currentstate = &disabled;
-  currentstate->updateLCD();
-}
-
-// the idle state
-void SwampCooler::setIdle()
-{
-  state = State::Idle;
-  setIdleOutputs();
-  currentstate = &idle;
-}
-
-// the running state
-void SwampCooler::setRunning()
-{
-  setRunningOutputs();
-  state = State::Running;
-  currentstate = &running;
-}
-
-// the error state
-void SwampCooler::setError()
-{
-  setErrorOutputs();
-  state = State::Error;
-  currentstate = &error;
-}
-
-//***************OUTPUT FUNCTIONS****************
-void disableAll()
-{
-  // Disable all LEDs and motor
-  *porta &= 0b00010101;
-}
-
-void setDisabledOutputs()
-{
-  disableAll();
-
-  // Set Yellow LED to high
-  *porta |= (1 << PORTA_YELLOW);
-
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Disabled");
-}
-
-void setIdleOutputs()
-{
-  disableAll();
-
-  // Enable Green LED
-  *porta |= (1 << PORTA_GREEN);
-}
-
-void setRunningOutputs()
-{
-  disableAll();
-  Serial.print("Motor on, Changed state to running on: ");
-  printRTCTime();
-
-  // Enable blue LED
-  *porta |= (1 << PORTA_BLUE);
-  *porta |= (1 << PORTA_MOTOR);
-}
-
-void setErrorOutputs()
-{
-  disableAll();
-
-  // Enable Red LED
-  *porta |= (1 << PORTA_RED);
-
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Water Low");
-}
-
-// Get the water level and cache it the result in `waterlevel`
-int getWaterLevel()
-{
-  unsigned int reading = adcRead(0);
-  unsigned int diff = waterLevel > reading ? waterLevel - reading : reading - waterLevel;
-  if (diff > 5)
-    waterLevel = reading;
-
-  return waterLevel;
-}
-
-// Get the temperature and cache the result in `temperature`
-int getTemperature()
-{
-  temperature = dht.readTemperature();
-  return temperature;
-}
-
-// Get the temperature and cache the result in `humidity`
-int getHumidity()
-{
-  humidity = dht.readHumidity();
-  return humidity;
-}
-
-// Update the lcd with humidity and temperature stats
-void updateLCDStats()
-{
-  lcd.clear();
-  lcd.setCursor(0, 0);
-
-  lcd.print("Temp: ");
-  lcd.print(temperature);
-  lcd.print("\xDF"
-            "C");
-
-  lcd.setCursor(0, 1);
-
-  lcd.print("Humidity: ");
-  lcd.print(humidity);
-  lcd.print("%");
-}
-
-// Print time using RTC
-void printRTCTime()
-{
-  Serial.print(now.year(), DEC);
-  Serial.print('/');
-  Serial.print(now.month(), DEC);
-  Serial.print('/');
-  Serial.print(now.day(), DEC);
-  Serial.print(" at ");
-  Serial.print(now.hour(), DEC);
-  Serial.print(':');
-  Serial.print(now.minute(), DEC);
-  Serial.print(':');
-  Serial.print(now.second(), DEC);
-  Serial.println();
-}
-
-// Init ADC
-void adcInit()
-{
-  // 7: enable adc, 2-0: 128 prescaler
-  *myADCSRA = 0b10000111;
-
-  // reset channel
-  *myADMUX = 0b01000000;
-}
-
-// Read ADC value from channel
-unsigned int adcRead(unsigned char adc_channel)
-{
-  // Set Channel
-  *myADMUX = (*myADMUX & 0b11111000) | (adc_channel & 0b00000111);
-
-  // Set MUX5 to 0
-  *myADCSRB &= ~0b00001000;
-
-  // Start Reading
-  *myADCSRA |= 0b01000000;
-
-  // Wait
-  while ((*myADCSRA & 0x40) != 0)
-    ;
-
-  unsigned int low = *myADCL;
-  unsigned int high = *myADCH;
-
-  return (high << 8) | low;
-}
-
-//************MAIN***************
-
-SwampCooler swampcooler;
-
-// The time in millis since arduino startup of the last button press. Used for debouncing.
-volatile unsigned long lastButtonPressTime = 0;
-// The time between button presses.
-volatile unsigned long buttonPressDebounceThreshold = 200;
-
-// Whether the last button event was high
-volatile bool lastButtonWasHigh = false;
-
-// ISR handler for button presses
-void processButtonPressISR()
-{
-  unsigned long currentButtonPressTime = millis();
-
-  if (currentButtonPressTime - lastButtonPressTime > buttonPressDebounceThreshold)
-    buttonPressed = true;
-
-  lastButtonPressTime = currentButtonPressTime;
-}
-
-ISR(INT3_vect)
-{
-  unsigned long currentButtonPressTime = millis();
-
-  if (currentButtonPressTime - lastButtonPressTime > buttonPressDebounceThreshold)
-    buttonPressed = true;
-
-  lastButtonPressTime = currentButtonPressTime;
-}
-
-void setup()
-{
+void setup() {
   Serial.begin(9600);
-
-  // initialize analog read
-  adcInit();
-
-  // initialize RTC module
-  Wire.begin();
+  
+  if (!rtc.begin()) {
+    Serial.println("RTC failed");
+    while (1);
+  }
   rtc.begin();
-  now = rtc.now();
-
-  // configure button pin
-  *myDDRD &= ~0b00001000;
-  *myPORTD |= 0x01 << 3;
-
-  // Set LED and motor pinmodes
-  *ddra |= 0b11101010;
-
-  // Setup button ISR int3
-  *myEIMSK |= 0b00001000;
-  // Falling edge for int3
-  *myEICRA |= 0b10000000;
-
-  //Initialize lcd
-  lcd.begin(16, 2);
-
-  //Initialize Temp/Humidity sensor
+  // DHT Sensor
   dht.begin();
 
-  //Initialize servo
-  servo.attach(SERVO_PIN);
+  pinMode(speedPin, OUTPUT);
+  
+  // Stepper Motor
+  stepper.setSpeed(60);
+
+  // Pin Mode Setup
+  pinMode (POWER_PIN, OUTPUT);
+  digitalWrite(POWER_PIN, LOW);
+
+  // Fan Setup
+  pinMode(FAN_MOTOR_PIN1, OUTPUT);
+  pinMode(FAN_MOTOR_PIN2, OUTPUT);
+
+
+  // LED Pins
+  pinMode(LED_YELLOW, OUTPUT);
+
+  pinMode(LED_GREEN, OUTPUT);
+
+  pinMode(LED_RED, OUTPUT);
+
+  pinMode(LED_BLUE, OUTPUT);
+  
+  // Button Interrupts
+  pinMode(VENT_CONTROL_PIN, INPUT_PULLUP);
+
+  pinMode(START_BUTTON_PIN, INPUT_PULLUP);
+
+  pinMode(STOP_BUTTON_PIN, INPUT_PULLUP);
+
+  pinMode(RESET_BUTTON_PIN, INPUT_PULLUP);
+  
+  attachInterrupt(digitalPinToInterrupt(START_BUTTON_PIN), startButtonISR, FALLING);
+
+  attachInterrupt(digitalPinToInterrupt(STOP_BUTTON_PIN), stopButtonISR, FALLING);
+
+  attachInterrupt(digitalPinToInterrupt(RESET_BUTTON_PIN), resetButtonISR, FALLING);
+
+  attachInterrupt(digitalPinToInterrupt(VENT_CONTROL_PIN), ventControlISR, FALLING);
+   
+  
+  // State Setup
+  currentState = DISABLED;
+  digitalWrite(LED_YELLOW, HIGH);  
+  Serial.println("Setup Complete. Start Button on Pin 2");
+  initializeVentControl();
 }
 
-void loop()
-{
-  swampcooler.update();
-  now = rtc.now(); //load current time from rtc into "now"
+void controlFanMotor(bool enable) {
+  if (enable) {
+    // Low/High to simulate motor rotation
+    digitalWrite(FAN_MOTOR_PIN1, HIGH);
+    digitalWrite(FAN_MOTOR_PIN2, LOW);
+    analogWrite(speedPin, 255);
+
+  } else {
+    // Stop motor
+    digitalWrite(FAN_MOTOR_PIN1, LOW);
+    digitalWrite(FAN_MOTOR_PIN2, LOW);
+  }
+}
+
+void initializeVentControl() {
+  if (currentState == DISABLED) {
+    int buttonState = digitalRead(VENT_CONTROL_PIN);
+    if (buttonState == LOW) {
+      stepper.setSpeed(10);
+      stepper.step(STEPS_PER_REVOLUTION/3);
+      delay(10);
+    }
+  }
+}
+
+void updateLEDs() {
+  // Turn off LEDs 
+  digitalWrite(LED_YELLOW, LOW);
+
+  digitalWrite(LED_GREEN, LOW);
+
+  digitalWrite(LED_RED, LOW);
+
+  digitalWrite(LED_BLUE, LOW);
+  
+  // Turn on LED based on current state
+  switch(currentState) {
+    case DISABLED:
+      digitalWrite(LED_YELLOW, HIGH);
+      break;
+    case IDLE:
+      digitalWrite(LED_GREEN, HIGH);
+      break;
+    case RUNNING:
+      digitalWrite(LED_BLUE, HIGH);
+      break;
+    case ERROR:
+      digitalWrite(LED_RED, HIGH);
+      break;
+  }
+}
+
+unsigned long lastUpdateTime = 0;
+unsigned long updateInterval = 60000;
+unsigned long fanStartTime = 0;
+const unsigned long fanRunTime = 60000;
+
+void loop() {
+   DateTime now = rtc.now();
+   if (ventControlRequested && currentState != ERROR) {
+   ventControlRequested = false; 
+   stepper.setSpeed(10);
+   stepper.step(STEPS_PER_REVOLUTION/3);
+  }
+  switch(currentState) {
+    case DISABLED:
+        
+      break;
+    
+    case IDLE:
+      // Check Water Level
+      Serial.print("State Transition to IDLE at: ");
+      Serial.println(now.timestamp());
+      
+      digitalWrite (POWER_PIN, HIGH);
+      int waterLevel = analogRead(WATER_LEVEL_PIN);
+      digitalWrite(POWER_PIN, LOW);
+      
+      if (waterLevel < WATER_THRESHOLD) {
+        currentState = ERROR;
+        Serial.print("State Transition to ERROR at: ");
+        Serial.println(now.timestamp());
+        updateLEDs();
+        break;
+      }
+      
+      // Monitor Temperature
+      float temperature = dht.readTemperature();
+      float humidity = dht.readHumidity();
+      
+      Serial.print("Temp: ");
+
+      Serial.print(temperature);
+
+      Serial.print("°C, Humidity: ");
+
+      Serial.print(humidity);
+
+      Serial.println("%");
+      
+      // Change temperature if it is high
+      if (temperature > TEMP_HIGH_THRESHOLD) {
+        
+        Serial.print("State Transition to RUNNING at: ");
+        Serial.println(now.timestamp());
+        currentState = RUNNING;
+        updateLEDs();
+      }
+    
+  case RUNNING:
+  Serial.println("Entering RUNNING state");
+  controlFanMotor(true); // Turn on the fan
+  fanStartTime = millis();
+
+  // Check Water Level
+  digitalWrite(POWER_PIN, HIGH);
+  waterLevel = analogRead(WATER_LEVEL_PIN);
+  digitalWrite(POWER_PIN, LOW);
+
+  Serial.print("Water level is currently: ");
+
+  Serial.println(waterLevel);
+
+  if (waterLevel < WATER_THRESHOLD) {
+    currentState = ERROR;
+    Serial.println("State Transition to ERROR: Low Water Level");
+    updateLEDs();
+    break;
+  }
+
+    // Monitor Temperature
+    temperature = dht.readTemperature();
+    humidity = dht.readHumidity();
+
+    Serial.print("Temp: ");
+
+    Serial.print(temperature);
+
+    Serial.print("°C, Humidity: ");
+
+    Serial.print(humidity);
+
+    Serial.println("%");
+  
+    if (millis() - fanStartTime >= fanRunTime) {
+      Serial.println("Fan run time exceeded, checking statstics");
+    }
+    // Change if temperature drops below limit
+    if (temperature <= TEMP_HIGH_THRESHOLD) {
+      Serial.println("Temperature dropped, transitioning to IDLE");
+      currentState = IDLE;
+      controlFanMotor(false); 
+      updateLEDs();
+    } else {
+       fanStartTime = millis();
+    }
+  break;
+    case ERROR:
+      // Turn off Fan Motor
+      controlFanMotor(false);
+      
+      Serial.println("ERROR: Low Water Level");  
+  }
+  delay(5000);
 }
