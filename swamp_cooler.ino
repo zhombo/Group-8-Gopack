@@ -1,312 +1,315 @@
-#include <Stepper.h>
-#include <DHT.h>
-#include <RTClib.h>
+//CPE 301
+//Professor Bashira Akter Anima
+//Group#8
+//Members(Louis-Pierce,Pinky-Nguyen,Bella-Picasso-Kenedy,Alexus-Rowe)
+
+#include <LiquidCrystal.h>
+#include <dht.h>
+#include <Servo.h>
+#include <Wire.h>
+#include <DS1307RTC.h>
 
 // Pin Definitions
+#define GREEN_LED 13
+#define YELLOW_LED 12
+#define RED_LED 11
+#define BLUE_LED 10
+#define FAN_PIN 43
+#define RESET_PIN 2
+#define STOP_PIN 3
+#define START_PIN 18
+#define VENT_LEFT_BUTTON 42
+#define VENT_RIGHT_BUTTON 46
+#define SERVO_PIN 45
+#define DHT_PIN 22
+#define RS_PIN 4
+#define EN_PIN 5
+#define D4_PIN 6
+#define D5_PIN 7
+#define D6_PIN 8
+#define D7_PIN 9
 
-#define START_BUTTON_PIN 2
-#define STOP_BUTTON_PIN 19
-#define RESET_BUTTON_PIN 18
-#define VENT_CONTROL_PIN 3
-#define LED_YELLOW 32
-#define LED_GREEN 30
-#define LED_RED 34
-#define LED_BLUE 36
+// Constants
+const float TEMP_THRESHOLD_HIGH = 20.0;
+const unsigned long LCD_UPDATE_INTERVAL = 60000; 
+const int SERVO_MIN_ANGLE = 0;
+const int SERVO_MAX_ANGLE = 180;
+const int SERVO_STEP = 15;
+const int WATER_LEVEL_THRESHOLD = 100;
 
-#define DHT_PIN 7
-#define FAN_MOTOR_PIN1 4
-#define FAN_MOTOR_PIN2 7
-#define POWER_PIN 6
-#define WATER_LEVEL_PIN A0
+// Globals
+LiquidCrystal lcd(RS_PIN, EN_PIN, D4_PIN, D5_PIN, D6_PIN, D7_PIN);
+dht DHT;
+Servo ventServo;
+String systemState = "DISABLED";
+volatile bool startPressed = false;
+float currentTemp = 18.0;
+float currentHumidity = 0.0;
+int currentWaterLevel = 0; 
+unsigned long lastUpdateMillis = 0;
+int ventPosition = 90; 
 
-// Stepper Motor Pins
-#define speedPin 5
-#define STEPPER_PIN3 24
-#define STEPPER_PIN4 22
-#define STEPPER_PIN1 28
-#define STEPPER_PIN2 26
-
-
-// Configuration Constants
-#define VENT_POSITION_TOLERANCE 5
-#define DHTTYPE DHT11
-#define WATER_THRESHOLD 15
-#define TEMP_LOW_THRESHOLD 10
-#define TEMP_HIGH_THRESHOLD 20
-#define STEPS_PER_REVOLUTION 2038
-
-// Definition status
-enum CoolerState {
-  DISABLED,
-  IDLE,
-  RUNNING,
-  ERROR
-};
-
-volatile bool ventControlRequested = false;
-
-// Global Variables
-CoolerState currentState = DISABLED;
-DHT dht(DHT_PIN, DHTTYPE);
-RTC_DS3231 rtc;
-Stepper stepper(STEPS_PER_REVOLUTION, STEPPER_PIN1, STEPPER_PIN3, STEPPER_PIN2, STEPPER_PIN4);
-int currentVentAngle = 0;
-
-//  Start Button Interrupt Routine 
-void startButtonISR() {
-    Serial.println("Start Button Interrupt Triggered!"); 
-    if (currentState == DISABLED) {
-    currentState = IDLE;
-    updateLEDs();
-   }
-}
-
-// Stop Button Interrupt Service Routine
-void stopButtonISR() {
-  if (currentState == RUNNING) {
-    // Turn off fan motor
-    controlFanMotor(false);
-    Serial.print("State Transition to DISABLED at: ");
-    DateTime now = rtc.now();
-    Serial.println(now.timestamp());
-    currentState = DISABLED;
-    updateLEDs();
-  }
-}
-
-//  Reset Button Interrupt Service Routine 
-void resetButtonISR() {
-  if (currentState == ERROR || currentState == RUNNING) {
-      currentState = IDLE;
-      updateLEDs();
-  }
-}
-
-void ventControlISR() {
-  ventControlRequested = true;
-}
+// Function Prototypes
+void initializeSystem();
+void handleStates();
+void updateSensors();
+void printToLCD();
+void logEvent(String message);
+void logStartTime();
+void adjustVent();
+void checkWaterLevel();
+void enterDisabledState();
+void enterIdleState();
+void enterErrorState();
+void enterRunningState();
+void ISR_StartButton();
+void setupADC();
+int readADC();
 
 void setup() {
-  Serial.begin(9600);
-  
-  if (!rtc.begin()) {
-    Serial.println("RTC failed");
-    while (1);
-  }
-  rtc.begin();
-  // DHT Sensor
-  dht.begin();
-
-  pinMode(speedPin, OUTPUT);
-  
-  // Stepper Motor
-  stepper.setSpeed(60);
-
-  // Pin Mode Setup
-  pinMode (POWER_PIN, OUTPUT);
-  digitalWrite(POWER_PIN, LOW);
-
-  // Fan Setup
-  pinMode(FAN_MOTOR_PIN1, OUTPUT);
-  pinMode(FAN_MOTOR_PIN2, OUTPUT);
-
-
-  // LED Pins
-  pinMode(LED_YELLOW, OUTPUT);
-
-  pinMode(LED_GREEN, OUTPUT);
-
-  pinMode(LED_RED, OUTPUT);
-
-  pinMode(LED_BLUE, OUTPUT);
-  
-  // Button Interrupts
-  pinMode(VENT_CONTROL_PIN, INPUT_PULLUP);
-
-  pinMode(START_BUTTON_PIN, INPUT_PULLUP);
-
-  pinMode(STOP_BUTTON_PIN, INPUT_PULLUP);
-
-  pinMode(RESET_BUTTON_PIN, INPUT_PULLUP);
-  
-  attachInterrupt(digitalPinToInterrupt(START_BUTTON_PIN), startButtonISR, FALLING);
-
-  attachInterrupt(digitalPinToInterrupt(STOP_BUTTON_PIN), stopButtonISR, FALLING);
-
-  attachInterrupt(digitalPinToInterrupt(RESET_BUTTON_PIN), resetButtonISR, FALLING);
-
-  attachInterrupt(digitalPinToInterrupt(VENT_CONTROL_PIN), ventControlISR, FALLING);
-   
-  
-  // State Setup
-  currentState = DISABLED;
-  digitalWrite(LED_YELLOW, HIGH);  
-  Serial.println("Setup Complete. Start Button on Pin 2");
-  initializeVentControl();
+  initializeSystem();
 }
-
-void controlFanMotor(bool enable) {
-  if (enable) {
-    // Low/High to simulate motor rotation
-    digitalWrite(FAN_MOTOR_PIN1, HIGH);
-    digitalWrite(FAN_MOTOR_PIN2, LOW);
-    analogWrite(speedPin, 255);
-
-  } else {
-    // Stop motor
-    digitalWrite(FAN_MOTOR_PIN1, LOW);
-    digitalWrite(FAN_MOTOR_PIN2, LOW);
-  }
-}
-
-void initializeVentControl() {
-  if (currentState == DISABLED) {
-    int buttonState = digitalRead(VENT_CONTROL_PIN);
-    if (buttonState == LOW) {
-      stepper.setSpeed(10);
-      stepper.step(STEPS_PER_REVOLUTION/3);
-      delay(10);
-    }
-  }
-}
-
-void updateLEDs() {
-  // Turn off LEDs 
-  digitalWrite(LED_YELLOW, LOW);
-
-  digitalWrite(LED_GREEN, LOW);
-
-  digitalWrite(LED_RED, LOW);
-
-  digitalWrite(LED_BLUE, LOW);
-  
-  // Turn on LED based on current state
-  switch(currentState) {
-    case DISABLED:
-      digitalWrite(LED_YELLOW, HIGH);
-      break;
-    case IDLE:
-      digitalWrite(LED_GREEN, HIGH);
-      break;
-    case RUNNING:
-      digitalWrite(LED_BLUE, HIGH);
-      break;
-    case ERROR:
-      digitalWrite(LED_RED, HIGH);
-      break;
-  }
-}
-
-unsigned long lastUpdateTime = 0;
-unsigned long updateInterval = 60000;
-unsigned long fanStartTime = 0;
-const unsigned long fanRunTime = 60000;
 
 void loop() {
-   DateTime now = rtc.now();
-   if (ventControlRequested && currentState != ERROR) {
-   ventControlRequested = false; 
-   stepper.setSpeed(10);
-   stepper.step(STEPS_PER_REVOLUTION/3);
+  handleStates();
+}
+
+void initializeSystem() {
+  Serial.begin(9600);
+
+  // LED Pins Setup
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(YELLOW_LED, OUTPUT);
+  pinMode(RED_LED, OUTPUT);
+  pinMode(BLUE_LED, OUTPUT);
+
+  // Buttons and Fan Setup
+  pinMode(RESET_PIN, INPUT_PULLUP);
+  pinMode(STOP_PIN, INPUT_PULLUP);
+  pinMode(START_PIN, INPUT_PULLUP);
+  pinMode(VENT_LEFT_BUTTON, INPUT_PULLUP);
+  pinMode(VENT_RIGHT_BUTTON, INPUT_PULLUP);
+  pinMode(FAN_PIN, OUTPUT);
+
+  // Attach Interrupt for Start Button
+  attachInterrupt(digitalPinToInterrupt(START_PIN), ISR_StartButton, RISING);
+
+  // LCD Initialization
+  lcd.begin(16, 2);
+  lcd.clear();
+  lcd.print("Initializing...");
+
+  // Initialize Servo Motor
+  ventServo.attach(SERVO_PIN);
+  ventServo.write(ventPosition);
+
+  // Initialize ADC
+  setupADC();
+
+  // Read initial sensor values
+  updateSensors();
+
+  // Start in Disabled State
+  enterDisabledState();
+}
+
+void handleStates() {
+  if (systemState == "DISABLED") {
+    enterDisabledState();
+  } else if (systemState == "IDLE") {
+    enterIdleState();
+  } else if (systemState == "ERROR") {
+    enterErrorState();
+  } else if (systemState == "RUNNING") {
+    enterRunningState();
   }
-  switch(currentState) {
-    case DISABLED:
-        
-      break;
-    
-    case IDLE:
-      // Check Water Level
-      Serial.print("State Transition to IDLE at: ");
-      Serial.println(now.timestamp());
-      
-      digitalWrite (POWER_PIN, HIGH);
-      int waterLevel = analogRead(WATER_LEVEL_PIN);
-      digitalWrite(POWER_PIN, LOW);
-      
-      if (waterLevel < WATER_THRESHOLD) {
-        currentState = ERROR;
-        Serial.print("State Transition to ERROR at: ");
-        Serial.println(now.timestamp());
-        updateLEDs();
-        break;
-      }
-      
-      // Monitor Temperature
-      float temperature = dht.readTemperature();
-      float humidity = dht.readHumidity();
-      
-      Serial.print("Temp: ");
+}
 
-      Serial.print(temperature);
+void enterDisabledState() {
+  digitalWrite(YELLOW_LED, HIGH);
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(RED_LED, LOW);
+  digitalWrite(BLUE_LED, LOW);
+  digitalWrite(FAN_PIN, LOW);
 
-      Serial.print("°C, Humidity: ");
+  lcd.clear();
+  lcd.print("System Disabled");
 
-      Serial.print(humidity);
+  if (startPressed) {
+    systemState = "IDLE";
+    lcd.clear();
+    lcd.print("System Enabled");
+    logEvent("System Enabled");
+    logStartTime();
+    lastUpdateMillis = millis() - LCD_UPDATE_INTERVAL; 
+  }
+}
 
-      Serial.println("%");
-      
-      // Change temperature if it is high
-      if (temperature > TEMP_HIGH_THRESHOLD) {
-        
-        Serial.print("State Transition to RUNNING at: ");
-        Serial.println(now.timestamp());
-        currentState = RUNNING;
-        updateLEDs();
-      }
-    
-  case RUNNING:
-  Serial.println("Entering RUNNING state");
-  controlFanMotor(true); // Turn on the fan
-  fanStartTime = millis();
+void enterIdleState() {
+  digitalWrite(GREEN_LED, HIGH);
+  digitalWrite(YELLOW_LED, LOW);
+  digitalWrite(RED_LED, LOW);
+  digitalWrite(BLUE_LED, LOW);
+  digitalWrite(FAN_PIN, LOW);
 
-  // Check Water Level
-  digitalWrite(POWER_PIN, HIGH);
-  waterLevel = analogRead(WATER_LEVEL_PIN);
-  digitalWrite(POWER_PIN, LOW);
+  updateSensors(); 
+  checkWaterLevel();
+  printToLCD();
+  adjustVent();
 
-  Serial.print("Water level is currently: ");
-
-  Serial.println(waterLevel);
-
-  if (waterLevel < WATER_THRESHOLD) {
-    currentState = ERROR;
-    Serial.println("State Transition to ERROR: Low Water Level");
-    updateLEDs();
-    break;
+  if (currentTemp >= TEMP_THRESHOLD_HIGH) {
+    systemState = "RUNNING";
+    logEvent("Entering RUNNING state");
   }
 
-    // Monitor Temperature
-    temperature = dht.readTemperature();
-    humidity = dht.readHumidity();
-
-    Serial.print("Temp: ");
-
-    Serial.print(temperature);
-
-    Serial.print("°C, Humidity: ");
-
-    Serial.print(humidity);
-
-    Serial.println("%");
-  
-    if (millis() - fanStartTime >= fanRunTime) {
-      Serial.println("Fan run time exceeded, checking statstics");
-    }
-    // Change if temperature drops below limit
-    if (temperature <= TEMP_HIGH_THRESHOLD) {
-      Serial.println("Temperature dropped, transitioning to IDLE");
-      currentState = IDLE;
-      controlFanMotor(false); 
-      updateLEDs();
-    } else {
-       fanStartTime = millis();
-    }
-  break;
-    case ERROR:
-      // Turn off Fan Motor
-      controlFanMotor(false);
-      
-      Serial.println("ERROR: Low Water Level");  
+  if (digitalRead(STOP_PIN) == LOW) {
+    systemState = "DISABLED";
+    logEvent("System Stopped");
+    startPressed = false;
   }
-  delay(5000);
+}
+
+void enterErrorState() {
+  digitalWrite(RED_LED, HIGH);
+  digitalWrite(YELLOW_LED, LOW);
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(BLUE_LED, LOW);
+  digitalWrite(FAN_PIN, LOW);
+
+  updateSensors(); 
+
+  lcd.clear();
+  lcd.print("Water Level Low!");
+
+  if (digitalRead(RESET_PIN) == LOW && currentWaterLevel > WATER_LEVEL_THRESHOLD) {
+    systemState = "IDLE";
+    logEvent("Error Resolved");
+  }
+}
+
+void enterRunningState() {
+  digitalWrite(BLUE_LED, HIGH);
+  digitalWrite(YELLOW_LED, LOW);
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(RED_LED, LOW);
+  digitalWrite(FAN_PIN, HIGH);
+
+  updateSensors();
+  printToLCD();
+  adjustVent();
+  checkWaterLevel();
+
+  if (currentTemp < TEMP_THRESHOLD_HIGH) {
+    systemState = "IDLE";
+    logEvent("Temperature Normal");
+  }
+
+  if (digitalRead(STOP_PIN) == LOW) {
+    systemState = "DISABLED";
+    logEvent("System Stopped");
+    startPressed = false;
+  }
+}
+
+void updateSensors() {
+  DHT.read11(DHT_PIN);
+  currentTemp = DHT.temperature;
+  currentHumidity = DHT.humidity;
+  currentWaterLevel = readADC(); 
+  // Print live sensor readings to Serial Monitor
+  Serial.print("Temperature: ");
+  Serial.print(currentTemp);
+  Serial.print(" C\t");
+  Serial.print("Humidity: ");
+  Serial.print(currentHumidity);
+  Serial.print(" %\t");
+  Serial.print("Water Level: ");
+  Serial.println(currentWaterLevel);
+}
+
+void printToLCD() {
+  if (millis() - lastUpdateMillis >= LCD_UPDATE_INTERVAL) {
+    lastUpdateMillis = millis();
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Temp: ");
+    lcd.print(currentTemp);
+    lcd.print("C");
+
+    lcd.setCursor(0, 1);
+    lcd.print("Hum:");
+    lcd.print(currentHumidity, 1); 
+    lcd.print("% W:");
+    lcd.print(currentWaterLevel);
+  }
+}
+
+void logEvent(String message) {
+  tmElements_t tm;
+  RTC.read(tm);
+  Serial.print(tm.Hour);
+  Serial.print(":");
+  Serial.print(tm.Minute);
+  Serial.print(":");
+  Serial.print(tm.Second);
+  Serial.print(" ");
+  Serial.print(tm.Month);
+  Serial.print("/");
+  Serial.print(tm.Day);
+  Serial.print("/");
+  Serial.print(tmYearToCalendar(tm.Year));
+  Serial.print(" - ");
+  Serial.println(message);
+}
+
+void logStartTime() {
+  tmElements_t tm;
+  RTC.read(tm);
+  Serial.print("System Start Time: ");
+  Serial.print(tm.Hour);
+  Serial.print(":");
+  Serial.print(tm.Minute);
+  Serial.print(":");
+  Serial.print(tm.Second);
+  Serial.print(" ");
+  Serial.print(tm.Month);
+  Serial.print("/");
+  Serial.print(tm.Day);
+  Serial.print("/");
+  Serial.println(tmYearToCalendar(tm.Year));
+}
+
+void adjustVent() {
+  if (digitalRead(VENT_LEFT_BUTTON) == LOW && ventPosition > SERVO_MIN_ANGLE) {
+    ventPosition -= SERVO_STEP;
+    ventServo.write(ventPosition);
+    logEvent("Vent Moved Left: " + String(ventPosition));
+  } else if (digitalRead(VENT_RIGHT_BUTTON) == LOW && ventPosition < SERVO_MAX_ANGLE) {
+    ventPosition += SERVO_STEP;
+    ventServo.write(ventPosition);
+    logEvent("Vent Moved Right: " + String(ventPosition));
+  }
+}
+
+void checkWaterLevel() {
+  if (currentWaterLevel < WATER_LEVEL_THRESHOLD) { 
+    systemState = "ERROR";
+    logEvent("Water Level Low");
+  }
+}
+
+void ISR_StartButton() {
+  startPressed = true;
+}
+
+void setupADC() {
+  ADMUX = (1 << REFS0); 
+  ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1); 
+}
+
+int readADC() {
+  ADMUX &= 0xF0; 
+  ADCSRA |= (1 << ADSC); 
+  while (ADCSRA & (1 << ADSC)); 
+  return ADC;
 }
